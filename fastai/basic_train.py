@@ -387,7 +387,7 @@ class Learner():
     def lr_range(self, lr:Union[float,slice])->np.ndarray:
         "Build differential learning rates from `lr`."
         if not isinstance(lr,slice): return lr
-        if lr.start: res = even_mults(lr.start, lr.stop, len(self.layer_groups))
+        if lr.start: res = even_mults(lr.start, lr.stop, max(2, len(self.layer_groups))) # If there is no hidden layer (e.g. linear regression), this would results in divided by zero error.
         else: res = [lr.stop/10]*(len(self.layer_groups)-1) + [lr.stop]
         return np.array(res)
 
