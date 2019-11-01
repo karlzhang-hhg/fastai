@@ -31,7 +31,12 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
     print("The output of model is {} with shape {}.\n".format(out[:2],out.shape))
 
     if not loss_func: return to_detach(out), to_detach(yb[0])
-    loss = loss_func(out, *yb)
+    loss = loss_func(out.view(-1,), *yb)
+    expanded_input_1, expanded_target_1 = torch.broadcast_tensors(out, yb[0])
+    expanded_input_2, expanded_target_2 = torch.broadcast_tensors(out, *yb)
+    expanded_input_3, expanded_target_3 = torch.broadcast_tensors(out.view(-1,), *yb)
+    print("The shape of all broadcasted input and target are {} {} {} {} {} {}.".format(expanded_input_1.shape, expanded_target_1.shape,expanded_input_2.shape, expanded_target_2.shape,expanded_input_3.shape, expanded_target_3.shape))
+    print("The first 2 rows of all broadcasted input and target are {} {} {} {} {} {}.".format(expanded_input_1[:2], expanded_target_1[:2],expanded_input_2[:2], expanded_target_2[:2],expanded_input_3[:2], expanded_target_3[:2]))
     print("Self calculating gradient:\n")
     ls_params = [p for p in model.parameters()]
     print(loss_func, type(loss_func), torch.matmul(xb[1], ls_params[0].data.view(-1,1))+ls_params[1].data-out)
