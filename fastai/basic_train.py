@@ -87,7 +87,7 @@ def loss_batch_grad(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc
             for p in group['params']:
                 if p.grad is not None:
                     # The .clone() is important, ow it will be erased by .zero_grad()
-                    ls_grads.append(p.grad.detach().cpu().clone())
+                    ls_grads.append(p.grad.detach().cpu().data.clone())
         # This line is important. Without this line, the gradient will be accumulated somehow.
         if not cb_handler.on_step_end():     opt.zero_grad()
     # print(loss.detach().cpu())
@@ -187,9 +187,10 @@ def cal_grad(learn:BasicLearner, dl:DataLoader, epochs:int=1, callbacks:Optional
             for xb,yb in progress_bar(dl, parent=pbar):
                 xb, yb = cb_handler.on_batch_begin(xb, yb)
                 # print("The xb and yb are {}, {}.".format(xb, yb))
-                print("The yb for this batch are {}.".format(yb,)) 
+                # print("The yb for this batch are {}.".format(yb,)) 
                 loss, grad = loss_batch_grad(learn.model, xb, yb, learn.loss_func, learn.opt, cb_handler)
                 ls_grads.append(grad)
+                print("The gradient of this batch is {}.".format(grad, ))
                 if cb_handler.on_batch_end(loss): break
     except Exception as e:
         exception = e
