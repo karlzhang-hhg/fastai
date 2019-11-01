@@ -40,7 +40,7 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
     # print("Self calculating gradient:\n")
     ls_params = [p for p in model.parameters()]
     # print(loss_func, type(loss_func), torch.matmul(xb[1], ls_params[0].data.view(-1,1))+ls_params[1].data-out)
-    # resi = (yb[0].view(-1,1)-out)
+    resi = (yb[0].view(-1,1)-out)
     # print(out.shape, yb[0].shape, resi.shape, xb[1].shape, (resi**2).mean(), loss, out.numel())
     print(2*resi.float().mean(axis=0), 2*(resi * xb[1]).float().mean(axis=0))
 
