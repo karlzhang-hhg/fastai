@@ -75,7 +75,11 @@ def loss_batch_grad(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc
     out = cb_handler.on_loss_begin(out)
 
     if not loss_func: return to_detach(out), yb[0].detach()
-    loss = loss_func(out, *yb)
+    loss = loss_func(out.view(-1,), *yb) # Same problem as in the loss_batch() funciton.
+
+    resi = (yb[0].view(-1,1)-out)
+    # print(out.shape, yb[0].shape, resi.shape, xb[1].shape, (resi**2).mean(), loss, out.numel())
+    print(2*resi.float().mean(axis=0), 2*(resi * xb[1]).float().mean(axis=0))
 
     ls_grads = []
 
