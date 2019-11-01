@@ -7,7 +7,7 @@ from .utils.ipython import gpu_mem_restore
 import inspect
 from fastprogress.fastprogress import format_time, IN_NOTEBOOK
 from time import time
-from .sixel import plot_sixel
+from fastai.sixel import plot_sixel
 
 __all__ = ['Learner', 'LearnerCallback', 'Recorder', 'RecordOnCPU', 'fit', 'loss_batch', 'train_epoch', 'validate',
            'get_preds', 'load_learner']
@@ -23,19 +23,70 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
     cb_handler = ifnone(cb_handler, CallbackHandler())
     if not is_listy(xb): xb = [xb]
     if not is_listy(yb): yb = [yb]
+    print(xb[1][:2], yb[0][:2])
+    print("The batch mean and std are {}, {}.\n".format(xb[1].mean(axis=0),xb[1].std(axis=0)))
     out = model(*xb)
+    print("The output of model is {} with shape {}.\n".format(out[:2],out.shape))
     out = cb_handler.on_loss_begin(out)
+    print("The output of model is {} with shape {}.\n".format(out[:2],out.shape))
 
     if not loss_func: return to_detach(out), to_detach(yb[0])
     loss = loss_func(out, *yb)
+    print("Self calculating gradient:\n")
+    ls_params = [p for p in model.parameters()]
+    print(loss_func, type(loss_func), torch.matmul(xb[1], ls_params[0].data.view(-1,1))+ls_params[1].data-out)
+    resi = (yb[0].view(-1,1)-out)
+    print(out.shape, yb[0].shape, resi.shape, xb[1].shape, (resi**2).mean(), loss, out.numel())
+    print(2*resi.float().mean(axis=0), 2*(resi * xb[1]).float().mean(axis=0), 2*(resi * (xb[1]-xb[1].mean(0))/xb[1].std(0)).float().mean(axis=0))
 
     if opt is not None:
         loss,skip_bwd = cb_handler.on_backward_begin(loss)
         if not skip_bwd:                     loss.backward()
+        print("print gradient (before):")
+        for group in opt.param_groups:
+            for p in group['params']:
+                if p is not None:
+                    print(p.grad.data)
+                    print("-------------")
         if not cb_handler.on_backward_end(): opt.step()
+        print("print gradient (after):")
+        for group in opt.param_groups:
+            for p in group['params']:
+                if p is not None:
+                    print(p.grad.data)
+                    print("-------------")
         if not cb_handler.on_step_end():     opt.zero_grad()
-
+    
+    # print(loss.detach().cpu())
     return loss.detach().cpu()
+
+def loss_batch_grad(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None, opt:OptOptimizer=None,
+               cb_handler:Optional[CallbackHandler]=None)->Tuple[Union[Tensor,int,float,str]]:
+    "Calculate loss and metrics for a batch, call out to callbacks as necessary."
+    cb_handler = ifnone(cb_handler, CallbackHandler())
+    if not is_listy(xb): xb = [xb]
+    if not is_listy(yb): yb = [yb]
+    out = model(*xb)
+    out = cb_handler.on_loss_begin(out)
+
+    if not loss_func: return to_detach(out), yb[0].detach()
+    loss = loss_func(out, *yb)
+
+    ls_grads = []
+
+    if opt is not None:
+        loss,skip_bwd = cb_handler.on_backward_begin(loss)
+        if not skip_bwd:                     loss.backward()
+        # if not cb_handler.on_backward_end(): opt.step()
+        for group in opt.param_groups:
+            for p in group['params']:
+                if p.grad is not None:
+                    # The .clone() is important, ow it will be erased by .zero_grad()
+                    ls_grads.append(p.grad.detach().cpu().clone())
+        # This line is important. Without this line, the gradient will be accumulated somehow.
+        if not cb_handler.on_step_end():     opt.zero_grad()
+    # print(loss.detach().cpu())
+    return loss.detach().cpu(), ls_grads
 
 def get_preds(model:nn.Module, dl:DataLoader, pbar:Optional[PBar]=None, cb_handler:Optional[CallbackHandler]=None,
               activ:nn.Module=None, loss_func:OptLossFunc=None, n_batch:Optional[int]=None) -> List[Tensor]:
@@ -111,6 +162,37 @@ def fit(epochs:int, learn:BasicLearner, callbacks:Optional[CallbackList]=None, m
         raise
     finally: cb_handler.on_train_end(exception)
 
+def cal_grad(learn:BasicLearner, dl:DataLoader, epochs:int=1, callbacks:Optional[CallbackList]=None, metrics:OptMetrics=None)->None:
+    "Calculate gradient of data in dl."
+    assert len(dl) != 0, f"""Your training dataloader is empty, can't train a model.
+        Use a smaller batch size (batch size={dl.batch_size} for {len(dl.dataset)} elements)."""
+    cb_handler = CallbackHandler(callbacks, metrics)
+    pbar = master_bar(range(epochs))
+    cb_handler.on_train_begin(1, pbar=pbar, metrics=metrics)
+
+    exception=False
+    ls_grads = []
+    try:
+        for epoch in pbar:
+            # Even though the for loop has only 1 iteration, the loop
+            # is necessary because ow pbar is not working.
+            learn.model.eval()
+            cb_handler.set_dl(dl)
+            cb_handler.on_epoch_begin()
+            for xb,yb in progress_bar(dl, parent=pbar):
+                xb, yb = cb_handler.on_batch_begin(xb, yb)
+                # print("The xb and yb are {}, {}.".format(xb, yb))
+                print("The yb for this batch are {}.".format(yb,)) 
+                loss, grad = loss_batch_grad(learn.model, xb, yb, learn.loss_func, learn.opt, cb_handler)
+                ls_grads.append(grad)
+                if cb_handler.on_batch_end(loss): break
+    except Exception as e:
+        exception = e
+        raise
+    finally: cb_handler.on_train_end(exception)
+    
+    return ls_grads
+
 loss_func_name2activ = {'cross_entropy_loss': F.softmax, 'nll_loss': torch.exp, 'poisson_nll_loss': torch.exp,
     'kl_div_loss': torch.exp, 'bce_with_logits_loss': torch.sigmoid, 'cross_entropy': F.softmax,
     'kl_div': torch.exp, 'binary_cross_entropy_with_logits': torch.sigmoid,
@@ -140,12 +222,126 @@ def _loss_func2activ(loss_func):
         return _loss_func_name2activ(loss_func.__name__, axis)
     return noop
 
+import math # noqa
+import torch # noqa
+from torch.optim.optimizer import Optimizer # noqa
+
+class Adam_Test(Optimizer):
+    r"""Implements Adam_Test algorithm.
+
+    It has been proposed in `Adam_Test: A Method for Stochastic Optimization`_.
+
+    Arguments:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+        lr (float, optional): learning rate (default: 1e-3)
+        betas (Tuple[float, float], optional): coefficients used for computing
+            running averages of gradient and its square (default: (0.9, 0.999))
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-8)
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        amsgrad (boolean, optional): whether to use the AMSGrad variant of this
+            algorithm from the paper `On the Convergence of Adam_Test and Beyond`_
+            (default: False)
+
+    .. _Adam\: A Method for Stochastic Optimization:
+        https://arxiv.org/abs/1412.6980
+    .. _On the Convergence of Adam_Test and Beyond:
+        https://openreview.net/forum?id=ryQu7f-RZ
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0, amsgrad=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, amsgrad=amsgrad)
+        super(Adam_Test, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(Adam_Test, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsgrad', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                print(type(p))
+                grad = p.grad.data
+                print("Inside Adam_Test function parameter and gradient: {}, {}".format(p, grad))
+                if grad.is_sparse:
+                    raise RuntimeError('Adam_Test does not support sparse gradients, please consider SparseAdam instead')
+                amsgrad = group['amsgrad']
+
+                state = self.state[p]
+
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                    if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsgrad:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+
+                state['step'] += 1
+
+                if group['weight_decay'] != 0:
+                    print("The weight decay: {}.\n".format(group['weight_decay'],))
+                    grad.add_(group['weight_decay'], p.data)
+
+                # Decay the first and second moment running average coefficient
+                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.max(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
+
+                p.data.addcdiv_(-step_size, exp_avg, denom)
+
+        return loss
+
+AdamW_Test = partial(Adam_Test, betas=(0.9,0.99))
+
 @dataclass
 class Learner():
     "Trainer for `model` using `data` to minimize `loss_func` with optimizer `opt_func`."
     data:DataBunch
     model:nn.Module
-    opt_func:Callable=AdamW
+    opt_func:Callable=AdamW_Test # AdamW
     loss_func:Callable=None
     metrics:Collection[Callable]=None
     true_wd:bool=True
@@ -159,6 +355,7 @@ class Learner():
     layer_groups:Collection[nn.Module]=None
     add_time:bool=True
     silent:bool=None
+    # cb_fns_registered:bool=False
     def __post_init__(self)->None:
         "Setup path,metrics, callbacks and ensure model directory exists."
         self.path = Path(ifnone(self.path, self.data.path))
@@ -197,7 +394,22 @@ class Learner():
         if not getattr(self, 'opt', False): self.create_opt(lr, wd)
         else: self.opt.lr,self.opt.wd = lr,wd
         callbacks = [cb(self) for cb in self.callback_fns + listify(defaults.extra_callback_fns)] + listify(callbacks)
+        self.cb_fns_registered = True
         fit(epochs, self, metrics=self.metrics, callbacks=self.callbacks+callbacks)
+
+    # My function for calculating gradient of a single data.
+    def cal_grad(self, dl:DataLoader, lr:Union[Floats,slice]=defaults.lr,
+            wd:Floats=None, callbacks:Collection[Callback]=None)->None:
+        "Fit the model on this learner with `lr` learning rate, `wd` weight decay for `epochs` with `callbacks`."
+        lr = self.lr_range(lr)
+        if wd is None: wd = self.wd
+        if not getattr(self, 'opt', False):
+            self.create_opt(lr, wd)
+            warn("The Learner object doesn't have optimizer.")
+        else: self.opt.lr,self.opt.wd = lr,wd
+        callbacks = [cb(self) for cb in self.callback_fns + listify(defaults.extra_callback_fns)] + listify(callbacks)
+        self.cb_fns_registered = True
+        return cal_grad(self, dl, metrics=self.metrics, callbacks=self.callbacks+callbacks)
 
     def create_opt(self, lr:Floats, wd:Floats=0.)->None:
         "Create optimizer with `lr` learning rate and `wd` weight decay."
@@ -588,7 +800,7 @@ class Recorder(LearnerCallback):
             values = self._split_list_val(values, skip_start, skip_end)
             ax.plot(val_iter, values)
             ax.set_ylabel(str(self.metrics_names[i]))
-            ax.set_xlabel('Batches processed')
+            ax.set_xlabel('Batches processed')             
         if ifnone(return_fig, defaults.return_fig): return fig
         if not IN_NOTEBOOK: plot_sixel(fig)
 
