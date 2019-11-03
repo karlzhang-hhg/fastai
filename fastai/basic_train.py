@@ -32,6 +32,7 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
 
     if not loss_func: return to_detach(out), to_detach(yb[0])
     loss = loss_func(out, *yb)
+    print("Use origin loss function signature and flatten loss function.")
     # loss = loss_func(out.view(-1,), *yb)
     # expanded_input_1, expanded_target_1 = torch.broadcast_tensors(out, yb[0])
     # expanded_input_2, expanded_target_2 = torch.broadcast_tensors(out, *yb)
