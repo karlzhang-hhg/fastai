@@ -31,7 +31,8 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
     # print("The output of model is {} with shape {}.\n".format(out[:2],out.shape))
 
     if not loss_func: return to_detach(out), to_detach(yb[0])
-    loss = loss_func(out.view(-1,), *yb)
+    loss = loss_func(out, *yb)
+    # loss = loss_func(out.view(-1,), *yb)
     # expanded_input_1, expanded_target_1 = torch.broadcast_tensors(out, yb[0])
     # expanded_input_2, expanded_target_2 = torch.broadcast_tensors(out, *yb)
     # expanded_input_3, expanded_target_3 = torch.broadcast_tensors(out.view(-1,), *yb)
